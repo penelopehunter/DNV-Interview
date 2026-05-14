@@ -1,0 +1,185 @@
+---
+title: "Question 2: Plug Load & Appliances Analysis"
+author: "Penny Hunter"
+date: "2026-05-13"
+output: html_document
+---
+
+Note: This file is designed to be run after Question 1 rmd
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = TRUE,
+  message   = FALSE,
+  warning   = FALSE,
+  fig.align = "center"
+)
+
+library(tidyverse)
+library(scales)
+library(cowplot)
+```
+
+## 1.0 Filter to Plug Load & Appliances
+
+```{r}
+# Filter claims to Plug Load and Appliances program group
+plug_load <- claims_record_2020 %>%
+  filter(`Program Group` == "Plug Load and Appliances")
+
+# Quick check — claims count, PA breakdown, program breakdown
+nrow(plug_load)
+plug_load %>% count(PA, sort = TRUE)
+plug_load %>% count(`Program ID`, sort = TRUE)
+```
+
+## 2.0 Overall Savings Summary
+
+```{r}
+# Overall program totals — numbers cited in report overview paragraph
+plug_load %>%
+  summarise(
+    total_kWh    = sum(`First Year Gross kWh`, na.rm = TRUE),
+    total_kW     = sum(`First Year Gross kW`, na.rm = TRUE),
+    total_Therm  = sum(`First Year Gross Therm`, na.rm = TRUE),
+    total_rebate = sum(`End User Rebate`, na.rm = TRUE),
+    n_claims     = n()
+  )
+```
+
+## 3.0 Savings by Measure
+
+```{r}
+# 78 unique measures — top by kWh
+savings_by_measure <- plug_load %>%
+  group_by(`Measure Description`) %>%
+  summarise(
+    total_kWh    = sum(`First Year Gross kWh`, na.rm = TRUE),
+    total_Therm  = sum(`First Year Gross Therm`, na.rm = TRUE),
+    total_rebate = sum(`End User Rebate`, na.rm = TRUE),
+    n_claims     = n()
+  ) %>%
+  arrange(desc(total_kWh))
+
+print(savings_by_measure)
+```
+
+## 4.0 Savings by Technology Group
+
+```{r}
+# Cleaner grouping than measure level — 12 technology groups
+plug_load %>%
+  group_by(`Technology Group`) %>%
+  summarise(
+    total_kWh    = sum(`First Year Gross kWh`, na.rm = TRUE),
+    total_Therm  = sum(`First Year Gross Therm`, na.rm = TRUE),
+    total_rebate = sum(`End User Rebate`, na.rm = TRUE),
+    n_claims     = n()
+  ) %>%
+  arrange(desc(total_kWh))
+```
+
+```{r}
+# Prepare data
+savings_by_tech <- plug_load %>%
+  group_by(`Technology Group`) %>%
+  summarise(
+    kWh   = sum(`First Year Gross kWh`, na.rm = TRUE),
+    Therm = sum(`First Year Gross Therm`, na.rm = TRUE)
+  ) %>%
+  pivot_longer(cols = c(kWh, Therm),
+               names_to  = "Savings_Type",
+               values_to = "Value") %>%
+  filter(Value > 0)
+
+# Top panel — dx HP Equipment only
+top_panel <- savings_by_tech %>%
+  filter(`Technology Group` == "dx HP Equipment") %>%
+  ggplot(aes(x = `Technology Group`, y = Value, fill = Savings_Type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = comma(round(Value, 0))),
+            position = position_dodge(width = 0.9),
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_fill_manual(values = c("kWh" = "steelblue", "Therm" = "gold")) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.2))) +
+  labs(x = NULL, y = NULL, fill = "Savings Type") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_blank(),
+        panel.grid.minor = element_blank())
+
+# Bottom panel — all other technology groups
+bottom_panel <- savings_by_tech %>%
+  filter(`Technology Group` != "dx HP Equipment") %>%
+  ggplot(aes(x = reorder(`Technology Group`, Value), y = Value, fill = Savings_Type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(aes(label = comma(round(Value, 0))),
+            position = position_dodge(width = 0.9),
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_fill_manual(values = c("kWh" = "steelblue", "Therm" = "gold")) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.2))) +
+  labs(x = NULL, y = "Savings", fill = "Savings Type") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        panel.grid.minor = element_blank())
+
+# Combine with split axis
+fig4_savings <- plot_grid(
+  ggdraw() + draw_label(
+    "Plug Load & Appliances: Energy Savings by Technology Group (2020)",
+    fontface = "bold", size = 12
+  ),
+  plot_grid(top_panel, bottom_panel, ncol = 1,
+            rel_heights = c(0.12, 0.88), align = "v"),
+  ncol = 1, rel_heights = c(0.05, 0.95)
+)
+
+print(fig4_savings)
+ggsave("figure4_savings_by_tech.png", plot = fig4_savings,
+       width = 10, height = 8, dpi = 300)
+```
+
+## 5.0 Customer Segments
+
+```{r}
+# Building type breakdown — 96.7% figure cited in report
+plug_load_customers <- plug_load %>%
+  count(`Building Type`, name = "Number_of_Claims") %>%
+  arrange(desc(Number_of_Claims)) %>%
+  mutate(Pct = round(Number_of_Claims / sum(Number_of_Claims) * 100, 1))
+
+print(plug_load_customers)
+```
+
+## 6.0 Rebates by Technology Group
+
+```{r}
+# Rebates by technology group
+rebates_by_tech <- plug_load %>%
+  group_by(`Technology Group`) %>%
+  summarise(total_rebate = sum(`End User Rebate`, na.rm = TRUE)) %>%
+  filter(total_rebate > 0) %>%
+  arrange(desc(total_rebate))
+
+fig5_rebates <- ggplot(
+  rebates_by_tech,
+  aes(x = reorder(`Technology Group`, total_rebate), y = total_rebate)
+) +
+  geom_bar(stat = "identity", fill = "darkgreen") +
+  geom_text(aes(label = comma(round(total_rebate, 0))),
+            hjust = -0.1, size = 3) +
+  coord_flip() +
+  scale_y_continuous(labels = dollar, expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Plug Load & Appliances: Rebates by Technology Group (2020)",
+    x     = "Technology Group",
+    y     = "Total Rebates (USD)"
+  ) +
+  theme_minimal()
+
+print(fig5_rebates)
+ggsave("figure5_rebates_by_tech.png", plot = fig5_rebates,
+       width = 10, height = 6, dpi = 300)
+```

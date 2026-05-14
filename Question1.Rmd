@@ -1,0 +1,233 @@
+---
+title: "Question 1: Data Summary"
+author: "Penny Hunter"
+date: "2026-05-12"
+output: html_document
+---
+Note: Run this file first 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center"
+)
+
+library(tidyverse)
+library(scales)
+```
+
+## 1.0 Loading Data
+
+```{r}
+Budget_filing_2020  <- read_csv("Data/Budget_filing_2020.csv")
+claim_metadata      <- read_csv("Data/claim_metadata.csv")
+claims_record_2020  <- read_csv("Data/claims_record_2020.csv")
+programs            <- read_csv("Data/programs.csv")
+```
+
+## 2.0 Data Inspection
+
+```{r}
+# Run for each dataset to inspect structure, summary, and missing values
+str(claims_record_2020)
+summary(claims_record_2020)
+colSums(is.na(claims_record_2020))
+
+str(Budget_filing_2020)
+summary(Budget_filing_2020)
+colSums(is.na(Budget_filing_2020))
+
+str(programs)
+summary(programs)
+colSums(is.na(programs))
+
+str(claim_metadata)
+summary(claim_metadata)
+colSums(is.na(claim_metadata))
+```
+
+
+## 3.0 Program Administrators
+
+
+```{r}
+# Count of claims by PA
+claims_by_pa <- claims_record_2020 %>%
+  count(PA, name = "Number_of_Claims") %>%
+  arrange(desc(Number_of_Claims)) %>%
+  mutate(Pct_Total = round(Number_of_Claims / sum(Number_of_Claims) * 100, 1))
+
+print(claims_by_pa) 
+# Figure 1: Claims by PA
+bar_chart_claims_by_pa <- ggplot(
+  claims_by_pa,
+  aes(x = reorder(PA, Number_of_Claims), y = Number_of_Claims)
+) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = comma(Number_of_Claims)), hjust = -0.1, size = 3) +
+  coord_flip() +
+  labs(
+    title = "Total Claims by Program Administrator (2020)",
+    x     = "Program Administrator",
+    y     = "Number of Claims"
+  ) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.15))) +
+  theme_minimal()
+
+print(bar_chart_claims_by_pa)
+ggsave("figure1_claims_by_pa.png", plot = bar_chart_claims_by_pa,
+       width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+# Supporting analysis: quarterly claim distribution — referenced in Next Steps
+claims_by_quarter <- claims_record_2020 %>%
+  count(`Claim Year Quarter`, name = "Number_of_Claims")
+
+print(claims_by_quarter)
+
+# Cross-tab by PA and quarter — confirms SCG Q4 spike
+quarter_by_pa <- claims_record_2020 %>%
+  count(PA, `Claim Year Quarter`, name = "Number_of_Claims") %>%
+  filter(Number_of_Claims > 0) %>%
+  arrange(PA, `Claim Year Quarter`)
+
+print(quarter_by_pa)
+
+# SCG Q4 specifically
+claims_record_2020 %>%
+  filter(PA == "SCG") %>%
+  count(`Claim Year Quarter`, name = "Number_of_Claims") %>%
+  mutate(Pct = round(Number_of_Claims / sum(Number_of_Claims) * 100, 1))
+```
+
+## 4.0 Savings by Program Group
+
+```{r}
+# Aggregate savings by Program Group (NAs excluded)
+savings_by_group <- aggregate(
+  cbind(`First Year Gross kWh`, `First Year Gross kW`,
+        `First Year Gross Therm`, `End User Rebate`) ~ `Program Group`,
+  data = claims_record_2020[!is.na(claims_record_2020$`Program Group`), ],
+  FUN  = sum
+)
+
+savings_by_group$n_claims <- as.numeric(
+  table(claims_record_2020$`Program Group`)
+)
+
+savings_by_group <- savings_by_group[
+  order(-savings_by_group$`First Year Gross kWh`), 
+]
+
+print(savings_by_group)
+
+# Top 10 for chart
+savings_top10 <- savings_by_group %>%
+  arrange(desc(`First Year Gross kWh`)) %>%
+  head(10)
+```
+
+```{r}
+# missing Program Group by PA — supports footnote in report
+claims_record_2020 %>%
+  filter(PA == "SCG") %>%
+  summarise(
+    total         = n(),
+    has_group     = sum(!is.na(`Program Group`)),
+    pct_has_group = round(mean(!is.na(`Program Group`)) * 100, 1)
+  )
+
+claims_record_2020 %>%
+  group_by(PA) %>%
+  summarise(
+    total_claims       = n(),
+    pct_missing_group  = round(mean(is.na(`Program Group`)) * 100, 1)
+  ) %>%
+  arrange(desc(pct_missing_group))
+```
+
+```{r}
+# Figure 2: Savings by Program Group
+program_group_savings <- ggplot(
+  savings_top10,
+  aes(x = reorder(`Program Group`, `First Year Gross kWh`),
+      y = `First Year Gross kWh`)
+) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(
+    aes(label = comma(round(`First Year Gross kWh`, 0))),
+    hjust = -0.1, size = 3
+  ) +
+  coord_flip() +
+  labs(
+    title   = "Top 10 Program Groups by Electric Savings (2020)",
+    x       = "Program Group",
+    y       = "First Year Gross kWh",
+    caption = "Top 10 of 29 program groups shown. ~78% of claims missing Program Group label excluded."
+  ) +
+  scale_y_continuous(labels = comma, expand = expansion(mult = c(0, 0.2))) +
+  theme_minimal()
+
+print(program_group_savings)
+ggsave("figure2_savings_by_program_group.png", plot = program_group_savings,
+       width = 10, height = 6, dpi = 300)
+```
+
+## 5.0 Customer Segments
+
+```{r}
+# residential vs commercial split — 93% figure cited in report
+claims_record_2020 %>%
+  count(`Measure Residential Flag`, name = "Number_of_Claims") %>%
+  mutate(Pct = round(Number_of_Claims / sum(Number_of_Claims) * 100, 1))
+```
+
+```{r}
+# Prepare building type data for pie chart
+building_pie <- claims_record_2020 %>%
+  count(`Building Type`, name = "Number_of_Claims") %>%
+  arrange(desc(Number_of_Claims)) %>%
+  mutate(
+    Building_Type = ifelse(Number_of_Claims < 10000, "Other", `Building Type`)
+  ) %>%
+  group_by(Building_Type) %>%
+  summarise(Number_of_Claims = sum(Number_of_Claims)) %>%
+  mutate(Pct = round(Number_of_Claims / sum(Number_of_Claims) * 100, 1))
+
+print(building_pie)
+```
+
+```{r}
+# Figure 3: Claims by building type
+pie_chart <- ggplot(
+  building_pie,
+  aes(x = "", y = Number_of_Claims, fill = Building_Type)
+) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y") +
+  geom_text(
+    aes(label = paste0(Pct, "%")),
+    position = position_stack(vjust = 0.5), size = 3
+  ) +
+  scale_fill_manual(values = c(
+    "Residential Single Family" = "steelblue",
+    "Residential Mobile Home"   = "gold",
+    "Residential Multi-family"  = "darkgreen",
+    "Commercial"                = "salmon",
+    "Other"                     = "purple"
+  )) +
+  labs(
+    title   = "Claims by Building Type (2020)",
+    fill    = "Building Type",
+    caption = "Categories with fewer than 10,000 claims grouped into 'Other'"
+  ) +
+  theme_void()
+
+print(pie_chart)
+ggsave("figure3_building_type.png", plot = pie_chart,
+       width = 7, height = 7, dpi = 300)
+```
+

@@ -1,0 +1,195 @@
+---
+title: "Question 3: Predictive Analytics"
+author: "Penny Hunter"
+date: "2026-05-13"
+output: html_document
+---
+
+Note: This file is designed to be run after Question  1 and 2 rmd
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo      = TRUE,
+  message   = FALSE,
+  warning   = FALSE,
+  fig.align = "center"
+)
+
+library(tidyverse)
+library(scales)
+```
+
+## 1.0 Define Outcome Variable
+
+```{r}
+# Programs spending >5% of filing budget on rebates are classified as high rebate
+rebate_pct <- Budget_filing_2020 %>%
+  filter(!is.na(`Filing Budget`) & `Filing Budget` > 0) %>%
+  mutate(
+    rebate_pct  = `Filing Gross End User Rebate` / `Filing Budget` * 100,
+    high_rebate = ifelse(rebate_pct > 5, 1, 0)
+  )
+
+# Distribution of rebate percentage
+summary(rebate_pct$rebate_pct)
+
+# How many programs exceed 5% threshold
+rebate_pct %>% count(high_rebate)
+```
+
+## 2.0 Build Model Dataset
+
+```{r}
+# PA overlap check — budget has 10 PAs, programs has 16
+unique(Budget_filing_2020$PA)
+unique(programs$PA)
+
+# Join budget to programs — PA.x retained from budget as base dataset
+model_data <- rebate_pct %>%
+  left_join(programs, by = c("Program ID" = "PrgID")) %>%
+  rename(PA = PA.x) %>%
+  select(
+    `Program ID`, PA, high_rebate, rebate_pct,
+    `Filing Budget`, `Excluded From Budget`,
+    ProgramStatus, Sector, StartYear, EndYear
+  ) %>%
+  mutate(
+    program_age   = 2020 - StartYear,
+    is_open_ended = ifelse(is.na(EndYear), 1, 0),
+    is_active     = ifelse(ProgramStatus == "active", 1, 0)
+  )
+
+# Confirm row count and missing values after join
+nrow(model_data)
+colSums(is.na(model_data))
+```
+
+## 3.0 Exploratory Analysis — Candidate Predictors
+
+```{r}
+# Rebate rate by PA
+model_data %>%
+  group_by(PA) %>%
+  summarise(
+    n               = n(),
+    pct_high_rebate = round(mean(high_rebate == 1) * 100, 1)
+  ) %>%
+  arrange(desc(pct_high_rebate))
+
+# Rebate rate by Sector
+model_data %>%
+  group_by(Sector) %>%
+  summarise(
+    n               = n(),
+    pct_high_rebate = round(mean(high_rebate == 1) * 100, 1)
+  ) %>%
+  arrange(desc(pct_high_rebate))
+
+# Rebate rate by program status
+model_data %>%
+  group_by(ProgramStatus) %>%
+  summarise(
+    n               = n(),
+    pct_high_rebate = round(mean(high_rebate == 1) * 100, 1)
+  ) %>%
+  arrange(desc(pct_high_rebate))
+
+# Budget size vs high rebate
+model_data %>%
+  group_by(high_rebate) %>%
+  summarise(mean_budget = mean(`Filing Budget`, na.rm = TRUE))
+
+# Program age vs high rebate — dropped as predictor, shown here for transparency
+model_data %>%
+  group_by(high_rebate) %>%
+  summarise(mean_age = mean(program_age, na.rm = TRUE))
+
+# Open ended vs high rebate
+model_data %>%
+  group_by(is_open_ended) %>%
+  summarise(
+    n               = n(),
+    pct_high_rebate = round(mean(high_rebate == 1) * 100, 1)
+  )
+
+# Excluded from budget vs high rebate — dropped as predictor, only one value
+model_data %>%
+  group_by(`Excluded From Budget`) %>%
+  summarise(
+    n               = n(),
+    pct_high_rebate = round(mean(high_rebate == 1) * 100, 1)
+  )
+```
+
+## 4.0 Claims-Level Features
+
+```{r}
+# Aggregate claims to program level and check association with high rebate
+claims_features <- claims_record_2020 %>%
+  group_by(`Program ID`) %>%
+  summarise(
+    total_claims        = n(),
+    pct_residential     = round(mean(`Measure Residential Flag`, na.rm = TRUE) * 100, 1),
+    total_kWh           = sum(`First Year Gross kWh`, na.rm = TRUE),
+    total_Therm         = sum(`First Year Gross Therm`, na.rm = TRUE),
+    n_technology_groups = n_distinct(`Technology Group`),
+    n_building_types    = n_distinct(`Building Type`)
+  )
+
+# Join to model data
+model_data_full <- model_data %>%
+  left_join(claims_features, by = "Program ID")
+
+# Match rate
+cat("Programs with claims data:", sum(!is.na(model_data_full$total_claims)), "\n")
+cat("Programs without claims data:", sum(is.na(model_data_full$total_claims)), "\n")
+
+# Association with high rebate — total_claims shows strongest signal
+model_data_full %>%
+  group_by(high_rebate) %>%
+  summarise(
+    mean_total_claims    = mean(total_claims, na.rm = TRUE),
+    mean_pct_residential = mean(pct_residential, na.rm = TRUE),
+    mean_kWh             = mean(total_kWh, na.rm = TRUE),
+    mean_Therm           = mean(total_Therm, na.rm = TRUE),
+    mean_n_tech_groups   = mean(n_technology_groups, na.rm = TRUE)
+  )
+```
+
+## 5.0 Logistic Regression Models
+
+```{r}
+# Convert categorical variables to factors
+model_data_full <- model_data_full %>%
+  mutate(
+    high_rebate = as.factor(high_rebate),
+    PA          = as.factor(PA),
+    Sector      = as.factor(Sector)
+  )
+
+# Five individual models — one per predictor
+m1 <- glm(high_rebate ~ PA,             data = model_data_full, family = binomial)
+m2 <- glm(high_rebate ~ Sector,         data = model_data_full, family = binomial)
+m3 <- glm(high_rebate ~ `Filing Budget`, data = model_data_full, family = binomial)
+m4 <- glm(high_rebate ~ is_open_ended,  data = model_data_full, family = binomial)
+m5 <- glm(high_rebate ~ total_claims,   data = model_data_full, family = binomial)
+```
+
+## 6.0 Model Comparison
+
+```{r}
+# Compare models using AIC and McFadden R²
+# McFadden R² = 1 - (log likelihood of model / log likelihood of null)
+null_model <- glm(high_rebate ~ 1, data = model_data_full, family = binomial)
+
+model_comparison <- data.frame(
+  Model = c("Total Claims", "Sector", "Filing Budget", "Is Open Ended", "PA"),
+  AIC   = round(c(AIC(m5), AIC(m2), AIC(m3), AIC(m4), AIC(m1)), 1),
+  McFadden_R2 = round(1 - c(
+    logLik(m5), logLik(m2), logLik(m3), logLik(m4), logLik(m1)
+  ) / logLik(null_model), 3)
+) %>%
+  arrange(AIC)
+
+print(model_comparison)
+```
